@@ -1,5 +1,5 @@
 /// <reference path="./.sst/platform/config.d.ts" />
-// 0xci-version: 4
+// 0xci-version: 5
 
 export default $config({
   app(input) {
@@ -47,6 +47,15 @@ export default $config({
     }
 
     const framework = detectFramework();
+
+    // These frameworks build on Nitro, which defaults to a plain Node
+    // server unless told otherwise. Force the Lambda-shaped output SST's
+    // components expect, overriding whatever preset the app's own config
+    // sets (Nitro reads NITRO_PRESET at build time with top priority).
+    if (["nuxt", "solidstart", "tanstack-start", "analog"].includes(framework)) {
+      process.env.NITRO_PRESET = "aws-lambda";
+    }
+
     const isPR = $app.stage.startsWith("pr-");
     const domain = !isPR && process.env.DOMAIN_NAME ? process.env.DOMAIN_NAME : undefined;
     const domainArgs = domain ? { domain: { name: domain, dns: sst.aws.dns() } } : {};

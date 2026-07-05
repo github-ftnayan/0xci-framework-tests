@@ -1,4 +1,4 @@
-# 0xci-version: 4
+# 0xci-version: 5
 name: 0xCI Deploy
 
 on:
@@ -47,6 +47,7 @@ jobs:
 
       - name: Deploy
         run: |
+          set -o pipefail
           STAGE=${{ github.event_name == 'push' && 'production' || format('pr-{0}', github.event.pull_request.number) }}
           npx sst deploy --stage $STAGE 2>&1 | tee /tmp/sst-out.txt
           cat /tmp/sst-out.txt
@@ -63,8 +64,9 @@ jobs:
             echo "{\"url\":\"$URL\"}" > .sst/output.json
             echo "Captured URL: $URL"
           else
-            echo "Warning: No deployment URL found in SST output"
+            echo "::error::No deployment URL found in SST output; treating deploy as failed"
             ls -la .sst/ 2>/dev/null || echo ".sst directory not found"
+            exit 1
           fi
 
       - name: Upload SST outputs
