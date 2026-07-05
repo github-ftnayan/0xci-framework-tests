@@ -1,0 +1,89 @@
+# 0xci-version: 6
+name: 0xCI Cleanup
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: 0xci-cleanup
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci
+          elif [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+          else echo "No lockfile found, skipping install"
+          fi
+
+      - name: Install SST providers
+        run: npx sst install
+
+      # Finds pr-* SST stages that still hold real resources but have no
+      # corresponding open PR (e.g. teardown failed, or a deploy was
+      # cancelled mid-run and left a lock/partial stack behind), then tears
+      # them down the same way teardown.yml does for a normal PR close.
+      - name: Find and remove orphaned preview stacks
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+
+          BOOTSTRAP=$(aws ssm get-parameter --name /sst/bootstrap --query 'Parameter.Value' --output text 2>/dev/null || true)
+          if [ -z "$BOOTSTRAP" ]; then
+            echo "No SST bootstrap found in this account/region yet — nothing to clean up."
+            exit 0
+          fi
+          BUCKET=$(echo "$BOOTSTRAP" | jq -r .state)
+
+          APP_NAME=$(echo "${REPO_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          if [[ ! "$APP_NAME" =~ ^[a-z] ]]; then APP_NAME="app-$APP_NAME"; fi
+
+          echo "Checking app '$APP_NAME' in state bucket '$BUCKET'"
+
+          OPEN_PRS=" $(gh pr list --state open --json number -q '.[].number' | tr '\n' ' ') "
+          echo "Open PRs:$OPEN_PRS"
+
+          KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "app/$APP_NAME/pr-" --query 'Contents[].Key' --output text 2>/dev/null || true)
+
+          for KEY in $KEYS; do
+            [ -z "$KEY" ] && continue
+            STAGE=$(basename "$KEY" .json)
+            PR_NUM=${STAGE#pr-}
+
+            if [[ "$OPEN_PRS" == *" $PR_NUM "* ]]; then
+              continue
+            fi
+
+            aws s3api get-object --bucket "$BUCKET" --key "$KEY" /tmp/sst-state.json >/dev/null 2>&1
+            RESOURCE_COUNT=$(jq '.checkpoint.latest.resources | length' /tmp/sst-state.json 2>/dev/null || echo 0)
+
+            if [ "${RESOURCE_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+              echo "::warning::Orphaned stage '$STAGE' has $RESOURCE_COUNT resource(s) and PR #$PR_NUM is not open — tearing down"
+              npx sst unlock --stage "$STAGE" || true
+              npx sst remove --stage "$STAGE"
+            else
+              echo "Stage '$STAGE' has no resources left, skipping"
+            fi
+          done
