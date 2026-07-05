@@ -59,7 +59,7 @@ jobs:
         run: |
           mkdir -p .sst
           # SST Ion prints outputs as "  key: value" lines at the end of deploy
-          URL=$(grep -oE 'https://[a-zA-Z0-9._-]+\.(cloudfront\.net|amazonaws\.com|on\.aws)[^ ]*' /tmp/sst-out.txt | tail -1)
+          URL=$(grep -aoE 'https://[a-zA-Z0-9._-]+\.(cloudfront\.net|amazonaws\.com|on\.aws)[^ ]*' /tmp/sst-out.txt | tail -1)
           if [ -n "$URL" ]; then
             echo "{\"url\":\"$URL\"}" > .sst/output.json
             echo "Captured URL: $URL"
